@@ -1,0 +1,269 @@
+# Every threshold the pipeline uses, with the evidence behind it.
+#
+# All values were chosen from distributions measured on THIS footage via
+# src/analyse_thresholds.py, not from intuition. Re-run that script after
+# changing the zone annotations, since the distributions shift with polygon
+# geometry.
+
+shelf_interest:
+  # An episode must last this long to count as a genuine interest event.
+  #
+  # Evidence: raw wrist-in-rack run lengths on interior.mp4 show a clear noise
+  # floor -- 75% of runs are under 0.5s (median 0.07s, i.e. one or two frames),
+  # which is a wrist clipping a polygon edge while walking past, not reaching
+  # for a product. Genuine engagement sits in the tail (p90 = 1.47s,
+  # p95 = 3.72s).
+  #
+  # 1.5s sits above the noise floor while still admitting a brief but real
+  # pick-up-and-look. It also satisfies the brief's requirement that interest
+  # be directed at a shelf "for a sustained period".
+  min_duration_s: 1.5
+
+  # How long the signal may lapse before the episode is closed, so that a
+  # later return counts as a NEW event.
+  #
+  # Evidence: sweeping this value on interior.mp4 (min_duration 1.5s) gives
+  #   max_gap : 0.5  1.0  2.0  3.0  4.0  5.0  7.0  10.0
+  #   events  :  12   12   12   11   10   10   10    10
+  # The count PLATEAUS from 4.0s onward -- identical totals and identical
+  # per-shelf breakdown all the way to 10s. That flatness is the justification:
+  # every genuine return visit in this footage is separated by more than 10
+  # seconds, so there is an empty band between "hand withdrawn mid-browse"
+  # (<=4s) and "walked away and came back" (>10s). Nothing ambiguous falls
+  # inside it.
+  #
+  # 4.0s is chosen at the START of that plateau: short withdrawals during one
+  # browse (picking up a shoe and examining it before reaching back) merge into
+  # a single event, while genuine returns stay separate -- and because the
+  # plateau extends to 10s+, the choice tolerates being wrong by 2x without
+  # changing any reported number.
+  #
+  # Whole-metric sensitivity: the total moves by only 2 events (12 -> 10)
+  # across a 20x sweep of this parameter, so the result does not balance on a
+  # knife-edge.
+  max_gap_s: 4.0
+
+  # --- Sure vs. unsure events -------------------------------------------
+  #
+  # SURE: a wrist keypoint was confirmed inside the shelf region for at least
+  # min_duration_s. Direct evidence of reaching for product. A mid-episode
+  # keypoint dropout does NOT downgrade it -- a dropout is a sensing failure,
+  # and one long enough to matter (> max_gap_s) would simply have ended the
+  # episode instead.
+  #
+  # UNSURE: the shopper's position stayed inside the shelf region for longer
+  # than body_presence_min_s, but their wrist was never confirmed there. People
+  # do not loiter inside a fixture by accident, so this is suggestive of
+  # engagement -- but it is not proof (they may be queueing, waiting for
+  # someone, or simply standing). Reported separately rather than silently
+  # dropped or counted as fact.
+  #
+  # Set equal to max_gap_s: the same 4.0s that marks "long enough to be a
+  # separate visit rather than one continuous action" is the natural bar for
+  # "long enough that standing here means something".
+  body_presence_min_s: 4.0
+
+# Minimum per-keypoint confidence for a wrist to be treated as observed.
+# Below this the wrist is "not observed" (UNKNOWN), never assumed absent.
+# 0.5 is the ultralytics convention for a trustworthy joint.
+keypoint_confidence: 0.5
+
+staff:
+  # A track is STAFF when the median fraction of its torso pixels matching the
+  # red apron gate reaches this value.
+  #
+  # Evidence: the curated reference crops (src/analyse_apron_colour.py) show the
+  # apron is red with 0.97 hue-agreement across 36 independent entrance tracks,
+  # and reads the same from front and back -- which matters because staff spend
+  # much of their interaction time kneeling with their back to the camera.
+  #
+  # A ratio (share of torso that is apron-coloured) rather than a histogram
+  # distance, so that a customer merely carrying something red scores a few
+  # stray pixels while a worn apron fills the band.
+  #
+  # The torso is extracted from SHOULDER AND HIP KEYPOINTS, not a fraction of
+  # the bounding box. This matters enormously here: a box is mostly background,
+  # and this store's warm wood shelving under warm lighting occupies the same
+  # hue range as the apron, so a box-fraction measurement scored the scene
+  # rather than the garment (verified staff 56% red vs random population 49% --
+  # useless). The keypoint polygon measures the garment itself.
+  #
+  # Threshold calibrated one-class (src/calibrate_staff.py) against the
+  # manually verified staff crops in data/persons_dense/, using the known
+  # ground truth that exactly ONE staff member appears in this footage:
+  #
+  #   thresh   staff recall   tracks labelled staff
+  #     0.30        97%              105   <- implausible for one person
+  #     0.70        89%               41
+  #     0.80        76%               24   <- chosen
+  #     0.85        65%               14
+  #     0.95        46%                1   <- loses most of the staff's frames
+  #
+  # 0.80 retains three quarters of the verified staff crops while labelling a
+  # track count consistent with one person under this tracker's fragmentation
+  # (the earlier manual pass found 36 staff tracks among 513, ~7%; 24 of 260 is
+  # a comparable share). Below 0.80 the count explodes; above 0.85 recall
+  # collapses and the staff member goes unrecognised for most of their frames.
+  apron_score_threshold: 0.80
+
+  # A track needs at least this many scored frames before it is labelled at
+  # all; below it the track is "unknown" rather than defaulting to customer.
+  min_scored_frames: 5
+
+  # Which percentile of a track's per-frame apron scores is compared against
+  # the threshold.
+  #
+  # NOT the median. The apron is only clearly visible for part of any track --
+  # the staff member turns away, bends down to fit a shoe, and is partly
+  # occluded by the customer being served -- so a median is dragged below
+  # threshold by frames in which the garment simply is not in view, and a
+  # genuine staff track is labelled customer.
+  #
+  # Calibrated against a ground-truth anchor: the dense extraction of the 36
+  # manually verified staff tracks saved 4,427 frames, i.e. ~148 seconds of
+  # staff screen time. Sweeping aggregation methods against that target:
+  #
+  #   p50 >= 0.80    24 tracks     32s   <- median: recovers only a fifth
+  #   frac(>=0.85)>=10%  34 tracks 106s
+  #   p70 >= 0.80    31 tracks    161s   <- chosen, closest to 148s
+  #   p75 >= 0.80    34 tracks    181s
+  #   p60 >= 0.70    49 tracks    433s   <- 3x too much, admits customers
+  #
+  # p70 asks "do the clearest 30% of this track's frames show the apron?",
+  # which tolerates the turned-away frames without admitting tracks that never
+  # show it at all.
+  aggregation_percentile: 70
+
+store_interest:
+  # A point known to be INSIDE the shop, used once to fix which side of the
+  # storefront axis counts as indoors. Bottom-centre of the frame sits on the
+  # shop's rug, well inside. Measured signed distance there is +365px.
+  inside_reference_xy: [640, 700]
+
+  # How far outside the storefront a person can be and still be considered
+  # "at" the shop front.
+  #
+  # Evidence: of the 12% of person-observations that fall outside the
+  # storefront axis, |distance| reaches only ~100px (p90 = 98). The visible
+  # mall corridor is therefore a narrow band directly in front of the shop, so
+  # 150px comfortably covers everyone outside without extending past what the
+  # camera can see. The interest CUES, not this band, do the discriminating.
+  attention_band_px: 150
+
+  # "Slowing down" = was walking, then dropped below the slow threshold.
+  # Evidence: entrance speed distribution is p25=4.2, p50=14.4, p75=50.6,
+  # p90=122 px/s. 40px/s sits near p75 (clearly walking); 15px/s sits at the
+  # median (clearly dawdling or stopped). Requiring BOTH avoids counting
+  # someone who was already stationary the whole time as having "slowed".
+  walking_speed_px_s: 40
+  slow_speed_px_s: 15
+
+  # Sustained presence in the attention band, for people who stop rather than
+  # merely slow. 2.0s matches the shelf-interest reasoning: long enough to
+  # exclude someone simply walking through frame.
+  dwell_min_s: 2.0
+
+  # Frames with a confidently-detected face while near the store.
+  #
+  # NOTE this is CORROBORATING evidence only, never sufficient on its own.
+  # The camera looks outward from inside the shop, so anyone walking down the
+  # corridor toward it presents a detectable face -- a consequence of camera
+  # geometry, not of attention. Used alone it flagged 61% of all passers-by as
+  # interested, which is plainly wrong; it now only decorates a track that
+  # already met a movement-based cue.
+  face_min_frames: 10
+
+  # APPROACHING cue: closed at least this much distance toward the storefront
+  # AND finished within approach_final_px of it. Direction-aware, so it
+  # separates someone walking up to the shop from someone merely passing at a
+  # constant distance. Sized against the outside-distance spread (|dist| p10=21
+  # to p90=98): a 40px closure is a substantial fraction of the corridor depth,
+  # and 60px final leaves the person clearly at the shop front.
+  approach_min_px: 40
+  approach_final_px: 60
+
+  # After crossing inward, the person must still be inside this long for the
+  # crossing to count as ENTERED -- rejects leaning across the threshold or a
+  # tracker jitter that momentarily places someone indoors.
+  settle_s: 1.0
+
+  # TOUCHING_DISPLAY cue: frames with a wrist inside a storefront rack while
+  # the person is still outside the shop.
+  #
+  # Several annotated entrance racks face the walkway and sit within arm's
+  # reach of the corridor, so a passer-by can handle merchandise without
+  # stepping in -- observed on track 1139, standing at median -64px while
+  # reaching into rack_K. That is the strongest interest evidence available,
+  # since the person physically touched the product.
+  #
+  # 15 frames (0.5s) rather than a single frame: the Task 2 run-length analysis
+  # showed 75% of raw wrist-in-rack runs last under 0.5s and are polygon-edge
+  # clipping as someone walks past, not deliberate handling.
+  display_touch_min_frames: 15
+
+  # --- passer-by gate ---------------------------------------------------
+  # Interest cues describe someone OUTSIDE the shop deciding whether to enter,
+  # so they may only be evaluated for a track that genuinely is a passer-by.
+  #
+  # Evidence for needing this: track 367 sat inside the store for 4.6 minutes
+  # (median distance +180px, i.e. deep indoors) but 1.74% of its frames dipped
+  # marginally outside through bounding-box jitter at the threshold. That
+  # sliver was enough to fire the "slowing" cue and label a seated customer an
+  # interested passer-by.
+  #
+  # outside_margin_px  -- a point must be at least this far outside to count as
+  #                       outside at all, absorbing box jitter near the line.
+  # min_outside_fraction -- the track must spend a majority of its life outside.
+  #                       A shopper inside the store fails this immediately.
+  # min_outside_s      -- and must be outside long enough to have been observed
+  #                       deciding, rather than clipped by the frame edge.
+  #
+  # Tracks that ENTERED are exempt from this gate: walking in is conclusive
+  # evidence of interest, and such a track is legitimately outside then inside.
+  outside_margin_px: 15
+  min_outside_fraction: 0.5
+  min_outside_s: 1.5
+
+  # Tracks shorter than this are discarded before counting.
+  #
+  # Evidence: only 137 of 260 entrance tracks last >=1s; the remainder are
+  # fragments produced by a busy walkway. Counting each fragment as a distinct
+  # interested passer-by would badly inflate Total Interested, which is the
+  # headline metric.
+  min_track_duration_s: 1.0
+
+staff_interaction:
+  # Interaction proximity is measured as the EDGE-TO-EDGE GAP between the staff
+  # and customer bounding boxes (zero when they overlap), expressed as a
+  # multiple of the staff member's box height.
+  #
+  # Boxes rather than foot positions: an earlier version used foot-to-foot
+  # distance, which misreads the most characteristic interaction in a shoe shop
+  # -- staff kneel to fit a shoe, putting their feet well away from a seated
+  # customer's feet while the two are practically touching. Box proximity
+  # captures "these two are together" regardless of posture.
+  #
+  # A ratio rather than raw pixels: this camera has strong perspective, so a
+  # fixed pixel gap would mean metres at the back of the shop and centimetres
+  # near the lens. Box height is a per-frame scale proxy.
+  #
+  # Evidence: measured staff-customer box gaps (normalised by staff height) are
+  # p25 = 0.31, p50 = 0.95, with 12.2% of pairs overlapping outright. The
+  # distribution has a dense cluster at or near zero -- people sharing a space
+  # -- and a long tail of people merely both in frame.
+  # 0.25 chosen at the START of a stable band: the sweep gives 3, 3, 3, 4, 6, 6,
+  # 8, 10 sessions at gap ratios 0.00, 0.05, 0.10, 0.15, 0.25, 0.40, 0.60, 1.00.
+  # 0.25 and 0.40 both yield 6, so the value sits where the metric is
+  # insensitive rather than on the steep part of the curve (0.15 sits between
+  # 4 and 6 and swings with small changes).
+  max_box_gap_ratio: 0.25
+
+  # Sustained proximity required before it counts as an interaction, so that
+  # walking past a customer on the way to a shelf is not a session.
+  min_duration_s: 2.0
+
+  # Proximity may lapse this long without ending the session -- the staff
+  # member stepping away to fetch a shoe box and returning is one continuous
+  # interaction, not two. Beyond it the session closes and a later return is
+  # counted as a NEW session, as the brief requires.
+  max_gap_s: 4.0

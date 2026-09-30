@@ -1,0 +1,35 @@
+# BoT-SORT configuration used by the production pipeline.
+#
+# Chosen empirically, not by reputation: src/compare_trackers.py benchmarked
+# ByteTrack vs BoT-SORT(ReID off) vs BoT-SORT(ReID on) on both project videos.
+# BoT-SORT with ReID OFF produced the fewest identity fragments
+# (entrance 487 IDs / 142 candidate fragmentation pairs; interior 311 / 97)
+# versus ByteTrack (513 / 174; 338 / 121) and BoT-SORT with ReID ON
+# (634 / 249; 380 / 134 -- notably WORSE, likely because `model: auto` falls
+# back to weak detector-derived appearance features that mis-associate
+# similarly-dressed shoppers).
+#
+# Deviation from the benchmarked config: gmc_method is set to `none` here.
+# Global motion compensation corrects for CAMERA movement between frames; both
+# videos come from a fixed CCTV mount, so estimating camera motion is pure
+# overhead (it accounted for roughly the 2x runtime seen during benchmarking)
+# and can only inject noise into the association step. Documented as an
+# assumption: if this pipeline were ever pointed at PTZ or handheld footage,
+# gmc_method should be restored to sparseOptFlow.
+tracker_type: botsort
+
+track_high_thresh: 0.25 # first-stage association threshold
+track_low_thresh: 0.1 # second-stage threshold; recovers low-confidence boxes
+new_track_thresh: 0.25 # unmatched detections above this start a new track
+track_buffer: 30 # frames a lost track stays alive (=1.0s at 30fps) before deletion
+match_thresh: 0.8 # IoU/cost cutoff for accepting an association
+fuse_score: True # blend detection confidence into the association cost
+
+gmc_method: none # static camera -- see note above
+
+# ReID settings are inert while with_reid is False, but left explicit so the
+# disabled state is obvious to a reader rather than implied by omission.
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False
+model: auto

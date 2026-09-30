@@ -1,0 +1,21 @@
+# BoT-SORT with ReID enabled, tuned for a fixed/static CCTV camera.
+# Base defaults come from ultralytics' bundled botsort.yaml; two changes:
+#   - with_reid: True   -> enable appearance-based matching (off by default),
+#     to test whether it reduces the ID fragmentation seen with ByteTrack.
+#   - gmc_method: none  -> global motion compensation corrects for CAMERA
+#     movement between frames; our CCTV is fixed, so this only adds
+#     compute/noise with no benefit here.
+tracker_type: botsort
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 30
+match_thresh: 0.8
+fuse_score: True
+
+gmc_method: none
+
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: True
+model: auto

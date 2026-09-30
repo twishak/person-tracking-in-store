@@ -1,0 +1,10 @@
+*.pt
+*.pyc
+__pycache__/
+venv/
+Hendricks/
+
+data/
+outputs/
+configs/*_zones.json
+.claude/
